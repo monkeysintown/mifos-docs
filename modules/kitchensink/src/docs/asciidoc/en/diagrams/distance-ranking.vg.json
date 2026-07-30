@@ -1,0 +1,51 @@
+{
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Distance from the main sequence, by component",
+  "width": 520,
+  "height": {
+    "step": 14
+  },
+  "data": {
+    "url": "{datadir}/architecture-metrics.csv"
+  },
+  "mark": "bar",
+  "encoding": {
+    "y": {
+      "field": "component",
+      "type": "nominal",
+      "sort": "-x",
+      "title": null
+    },
+    "x": {
+      "field": "distance",
+      "type": "quantitative",
+      "title": "Distance (D = |A + I - 1|)"
+    },
+    "color": {
+      "field": "distance",
+      "type": "quantitative",
+      "legend": null,
+      "scale": {
+        "scheme": "orangered"
+      }
+    },
+    "tooltip": [
+      {
+        "field": "component",
+        "type": "nominal"
+      },
+      {
+        "field": "distance",
+        "type": "quantitative"
+      },
+      {
+        "field": "efferentCoupling",
+        "type": "quantitative"
+      },
+      {
+        "field": "afferentCoupling",
+        "type": "quantitative"
+      }
+    ]
+  }
+}

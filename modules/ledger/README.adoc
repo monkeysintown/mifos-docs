@@ -1,0 +1,265 @@
+= Mifos Accounting - Ledger
+:toc: left
+:toclevels: 2
+:source-highlighter: rouge
+
+A clean-room re-implementation of the Apache Fineract accounting (general ledger) sub-system as a modular
+Spring Boot 4 / Java 25 application, built with the Mifos build conventions
+(`mifos-conventions-gradle-base`, `mifos-conventions-gradle-suite`) and the `mifos-commons` libraries.
+
+NOTE: *Clean room.* Nothing was copied from Fineract. Behaviour was re-derived from double-entry bookkeeping
+principles and Fineract's publicly documented concepts (chart of accounts, journal entries, accounting closures,
+financial activity mappings, opening balances); the design is new.
+
+== Build and run
+
+[source,bash]
+----
+./gradlew mifosConfigUnzip
+./gradlew clean build                 # unit + flow tests; LedgerApplicationIT needs Docker (Testcontainers)
+
+docker compose up -d                   # PostGIS-enabled PostgreSQL (the commons master changelog needs postgis)
+./gradlew :mifos-accounting-ledger-application-migration-implementation:bootRun   # Liquibase, then exits
+./gradlew :mifos-accounting-ledger-application-backend-implementation:bootRun     # API on :8080, actuator on :8081
+----
+
+The OpenAPI description is served by springdoc (`/v3/api-docs`, `/swagger-ui.html`).
+
+== Architecture
+
+One bounded context, *ledger*, laid out exactly as the suite's layout plugin expects. Module build files are
+(almost) empty: the plugin discovers modules by path, applies `org.mifos.conventions.gradle.boot.imperative.*`
+and wires `core -> mapping -> implementation -> starter`.
+
+----
+modules/ledger/
+├── core/                         domain model, events, ports, errors, flow helpers  (framework free)
+│   └── src/testFixtures/         in-memory adapters of every port (used by usecase and flow tests)
+├── usecase/
+│   ├── account/{core,implementation,starter}    chart of accounts            (8 usecases)
+│   ├── journal/{core,implementation,starter}    journal entries              (7 usecases)
+│   ├── period/{core,implementation,starter}     accounting closures + lock   (5 usecases)
+│   ├── balance/{core,implementation,starter}    balances, trial balance, uncleared flows, integrity (4 usecases)
+│   └── activity/{core,implementation,starter}   financial activity mappings  (4 usecases)
+├── flow/
+│   ├── posting/{core,implementation,starter}    post (single, batch)
+│   ├── reversal/{core,implementation,starter}   reverse an entry
+│   ├── opening/{core,implementation,starter}    define opening balances
+│   └── closing/{core,implementation,starter}    close / reopen a period, close a financial year
+├── persistence/relational/{core,implementation,starter}   PostgreSQL: event store, projections, Liquibase
+├── transport/rest/{implementation,starter}                REST API, problem details
+├── starter/                      aggregates all starters; FlowBoundary, BusinessDateProvider, settings
+└── application/
+    ├── backend/implementation    the service
+    └── migration/implementation  runs the schema migration and exits
+----
+
+.Dependency rules (enforced by Gradle module boundaries)
+----
+transport ─┐
+           ├─> flow core ──> usecase core ──> ledger core <── persistence implementation
+flow impl ─┘                       ^                ^
+                                   └── usecase impl ┘
+----
+
+* `*/core` modules are *contracts*: interfaces with nested `Request`/`Response` (usecases) or `Command`/`Context`
+(flows) records. Flows and transports depend on contracts only; implementations meet at runtime via starters.
+* The domain core has no Spring, Jackson or Lombok dependency (only annotations such as `@JsonValue`).
+* Ports (`GlAccountRepository`, `JournalEntryRepository`, `BalanceReadModel`, `OfficeLedgerLock`, ...) are
+implemented by the relational adapters and by the in-memory test fixtures with the same semantics.
+
+== Design principles
+
+The design follows the lessons of three well-known write-ups on ledgers: Square's *Books* (an immutable
+double-entry accounting database service), Stripe's *Ledger* (tracking and validating money movement) and
+Anvil's *Double-entry accounting for engineers*.
+
+[cols="1,3"]
+|===
+|Principle |How it is realised
+
+|*Immutability* - facts are never changed, corrections are new facts
+|Journal entries are event-sourced; reversals are new opposite entries. The database rejects `UPDATE`/`DELETE`
+on `ledger_event` and `ledger_journal_line` (triggers).
+
+|*Zero-sum postings* - a posting is a signed amount, debits positive, credits negative
+|`JournalEntryLine.signedAmount()`; an entry balances when its lines sum to zero, the ledger when all balances
+of a currency sum to zero (the accounting equation). Sides remain in the API for accountants. A deferred
+constraint trigger re-checks every entry at commit, independently of the application.
+
+|*Two time axes* - when something happened vs. when the ledger learned it
+|`entryDate` (effective) and `postedAt` (recorded). Balance and trial-balance queries take `asOf` *and*
+`knownAt`: because nothing is ever edited, any past report can be reproduced exactly, even after back-dated
+corrections.
+
+|*Money flows must clear* - money passing through intermediate accounts has to leave them again
+|GL accounts can be flagged `clearing` (cash in transit, settlement, suspense). `FindUnclearedBalances`
+reports, per account, office, currency and flow (`sourceReference`), residual balances older than a settlement
+window - the signal for a missing or wrong posting.
+
+|*Continuous verification* - don't trust, re-verify
+|`VerifyLedgerIntegrity` re-derives the invariants from stored data: balanced entries, zero-sum per currency,
+daily totals vs. journal lines, projected entries vs. events. The backend runs it on a schedule
+(`mifos.ledger.integrity.cron`), logs and publishes violations; `GET /integrity` answers `409` when unhealthy.
+
+|*Income and expenses are temporary equity*
+|`CloseFinancialYearFlow` posts, per currency, a closing entry that zeroes every income and expense account
+into retained earnings (`RETAINED_EARNINGS` financial activity) and closes the period - atomically, under
+the exclusive office lock.
+
+|*Idempotency* - retries must never double-post
+|`transactionId` is the idempotency key of every posting; derived ids make opening balances and year-end
+closing replayable.
+|===
+
+Deliberate deviation: amounts are fixed-scale decimals (6 places) rather than integer minor units, because
+microfinance accruals routinely need sub-cent precision; the ledger still never rounds.
+
+== Domain model
+
+[cols="1,1,3"]
+|===
+|Aggregate |Persistence |Why
+
+|`JournalEntry`
+|*event-sourced* (`Posted`, `Reversed`)
+|A ledger is an append-only log by nature: entries are never changed, corrections are new facts. The event
+stream is the audit trail (`GET /journal-entries/{id}/history`), projections are rebuildable.
+
+|`OfficeLedgerPeriods`
+|*event-sourced* (`Closed`, `Reopened`), one stream per office
+|Closures form a stack; the full history of closing and re-opening is relevant for audit.
+
+|`GlAccount`
+|*state-stored* + domain events
+|Reference data with a CRUD-like lifecycle; event sourcing would add cost without benefit. Its events
+(`Created`, `Moved`, `Disabled`, ...) are still published through the outbox.
+
+|`FinancialActivityMapping`
+|state-stored value
+|A routing table (activity -> account), validated by the domain.
+|===
+
+Invariants live in the aggregates: balanced, single-currency entries with strictly positive amounts and no
+silent rounding; no future dates; reverse at most once, never reverse a reversal; parents are header accounts
+of the same type; no cycles; no deletion of accounts with children, postings or mappings; closures strictly
+increasing. Rules spanning aggregates are domain services (`PostingPolicy`, `OpeningBalances`).
+
+== Usecases and flows
+
+A *usecase* (`MifosUsecase<REQ, RES>`) is one atomic, transactional business operation that is meaningful on
+its own. A *flow* (`MifosFlow<C>`) composes usecases - and other flows - over an immutable context record, using
+the `MifosFlow` combinators plus `MifosFlowSteps` (`step`, `check`, `subflow`, `within`, `retryOn`). Flows
+contain no business rules: only order, conditions, transaction boundaries and retries.
+
+.Posting flow
+----
+[transaction id given?] -> FindJournalEntryByTransactionId
+[existing?]  -> replay (identical content -> existing entry | otherwise TRANSACTION_ID_REUSED)
+[otherwise]  -> LockOfficeLedger(SHARED) -> VerifyPeriodOpen -> ResolvePostingAccounts
+                -> VerifyAccountsPostable -> RecordJournalEntry
+within(transaction), retryOn(CONCURRENCY_CONFLICT | DUPLICATE_TRANSACTION_ID)
+----
+
+.Other flows
+----
+batch posting   repeatWhile(hasNext, subflow(posting pipeline))          one transaction for all drafts
+reversal        GetJournalEntry -> resolve date -> Lock(SHARED) -> VerifyPeriodOpen
+                -> RecordReversingEntry -> MarkJournalEntryReversed      (no postability check: corrections
+                                                                          must always be possible)
+opening         GetFinancialActivityAccount(OPENING_BALANCES_TRANSFER_CONTRA) -> subflow(posting flow)
+close / reopen  Lock(EXCLUSIVE) -> CloseAccountingPeriod | ReopenAccountingPeriod
+year end        Lock(EXCLUSIVE) -> GetFinancialActivityAccount(RETAINED_EARNINGS)
+                -> repeatWhile(currencies: GetTrialBalance -> closing entry? -> subflow(posting flow))
+                -> CloseAccountingPeriod                                 (one transaction)
+----
+
+== Consistency and concurrency
+
+* *Period integrity.* Postings take a shared, closures an exclusive PostgreSQL transaction-scoped advisory lock
+per office. A posting can never land in a period that is being closed, while postings never block each other.
+`LockOfficeLedgerUsecase` uses `Propagation.MANDATORY` so a lock outside a transaction is impossible.
+* *Optimistic concurrency.* Event appends rely on the unique `(stream_type, stream_id, stream_version)`
+constraint; GL accounts on `@Version`. Conflicts surface as `CONCURRENCY_CONFLICT`.
+* *Idempotency.* `transactionId` is a business key: re-posting identical content returns the existing entry
+(`200`), different content is rejected (`409 TRANSACTION_ID_REUSED`). Concurrent duplicates lose on the unique
+constraint, are retried in a fresh transaction and then replay the winner.
+* *Retries* happen outside the transaction (`retryOn(n, conflict, within(tx, flow))`) and never for business
+failures.
+* *Projections* (entries, lines, daily balances, closures) are updated synchronously in the appending
+transaction, so balances are always consistent with the journal. Reversals need no special balance logic:
+the reversing entry is itself a posting.
+* *Integration events.* Recorded events are published as Spring application events; with Spring Modulith's
+JDBC event publication registry, `@ApplicationModuleListener`s receive them reliably after commit
+(transactional outbox).
+* *Append-only storage.* A trigger rejects `UPDATE`, `DELETE` and `TRUNCATE` on `ledger_event`.
+* *Stable event schema.* `LedgerEventCodec` maps domain events to versioned DTOs (`event_type`,
+`schema_version`); domain refactorings never break stored history, new versions get upcasters.
+
+== REST API (`/api/v1/ledger`)
+
+[cols="1,3"]
+|===
+|`POST/GET/PUT/DELETE /gl-accounts[/{id}]` |chart of accounts (`ETag`/`If-Match` on GET/PUT); `GET ?type&usage&disabled&manualEntriesAllowed&parentId&q`
+|`PUT /gl-accounts/{id}/status` |disable / enable
+|`GET /gl-accounts/{id}/balance?currency&officeId&asOf&knownAt&includeDescendants` |balance (headers roll up, bitemporal)
+|`POST /journal-entries`, `POST /journal-entries/batch` |post (idempotent per `transactionId`)
+|`GET /journal-entries[/{id}]`, `GET /journal-entries/{id}/history` |query, event history
+|`POST /journal-entries/{id}/reversal` |reverse
+|`POST /offices/{officeId}/opening-balances` |opening balances
+|`POST /offices/{officeId}/closures`, `DELETE /offices/{officeId}/closures/latest`, `GET /closures` |accounting closures
+|`GET /trial-balance?currency&officeId&asOf&knownAt` |trial balance (bitemporal)
+|`POST /offices/{officeId}/year-end-closures` |close a financial year into retained earnings
+|`GET /uncleared-balances?officeId&currency&asOf&settlementDays` |clearing-account flows that did not net to zero
+|`GET /integrity` |integrity report (`409` if violations)
+|`GET/PUT/DELETE /financial-activities[/{activity}]` |financial activity mappings
+|===
+
+Errors are RFC 9457 problem details: `400` validation, `404` not found, `409` conflict, `422` business rule.
+
+== Mapping from Fineract concepts
+
+[cols="1,2"]
+|===
+|Fineract |Here
+|GL account (type, usage HEADER/DETAIL, manual entries, disabled, tag) |`GlAccount` (UUIDv7 ids, `ltree` hierarchy)
+|Journal entry rows grouped by transaction id |one `JournalEntry` aggregate = one balanced transaction with lines
+|Reversal (reversed flag + opposite entries) |`Reversed` event + reversing entry linked via `reversalOf`
+|Accounting closure (GL closure) |`OfficeLedgerPeriods` stream per office
+|Financial activity account mapping |`FinancialActivityMapping`
+|Opening balances with contra account |`DefineOpeningBalancesFlow`
+|Running balances |daily-total projection; balances computed "as of" any date
+|===
+
+Beyond Fineract: clearing-account validation, bitemporal reporting, integrity verification and year-end
+closing entries.
+
+Not included yet: accounting-rule templates, provisioning entries, multi-tenancy, security, inter-office
+(branch) transfers, a projection-rebuild command, currency configuration (decimal places). Other bounded
+contexts post through `PostJournalEntryFlow` (in-process) or `POST /journal-entries` with their `source`
+(`LOAN`, `SAVINGS`, ...) and their own `transactionId`; system sources should be restricted to service
+principals.
+
+== Verification status
+
+The domain core, all usecases, all flows and the in-memory fixtures were compiled with JDK 25 (`-Werror`) and
+their 64 JUnit tests pass. Persistence, transport, starters, applications and the Testcontainers integration
+test (`LedgerApplicationIT`: concurrent duplicate-posting race, database-enforced balancing and immutability,
+bitemporal reproduction) were type-checked against stubs of
+the Spring/Jackson/QueryDSL APIs they use, but have not yet run against the real libraries: run
+`./gradlew build` with Docker available.
+
+== Notes on mifos-commons and the conventions
+
+Observed while building this project (worth fixing upstream):
+
+. `MifosUsecaseRegistry` registers usecases by implementation class but looks them up by request class.
+. `MifosErrorHandlingControllerAdvice` calls `getArgs().toArray()` without a null check and answers `400` for
+every error; the ledger always sets args and adds its own advice for `404/409/422`.
+. The message source scans `classpath:org/mifos/*/messages.properties` (not `classpath*:`), so bundles in other
+jars may be missed; ledger error codes therefore carry English fallback messages.
+. `MifosFlow.forEach` takes a `BiConsumer` (unusable with immutable contexts) and `MifosFlow.retry` retries
+business failures; `MifosFlowSteps` (`retryOn`, `step`, `subflow`, `within`) are candidates for upstreaming.
+. Suite template drift: the template's `Main` package differs from the class name computed by the application
+plugin, `persistence/relational/build.gradle` does not match the plugin's `*/persistence/*/core` pattern, and
+the template LICENSE is Apache-2.0 while sources carry MPL-2.0 headers.

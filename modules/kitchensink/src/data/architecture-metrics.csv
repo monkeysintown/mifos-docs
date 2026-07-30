@@ -1,0 +1,5 @@
+component,classCount,abstractTypeCount,afferentCoupling,efferentCoupling,abstractness,instability,distance,incomingComponents,outgoingComponents
+org.mifos.commons.boot.cli.pico,1,0,0,0,0.000000,0.000000,1.000000,,
+org.mifos.commons.boot.cli.pico.autoconfigure,2,0,0,1,0.000000,1.000000,0.000000,,org.mifos.commons.boot.cli.pico.command
+org.mifos.commons.boot.cli.pico.command,1,1,1,0,1.000000,0.000000,0.000000,org.mifos.commons.boot.cli.pico.autoconfigure,
+org.mifos.commons.boot.cli.pico.runner,1,0,0,0,0.000000,0.000000,1.000000,,
