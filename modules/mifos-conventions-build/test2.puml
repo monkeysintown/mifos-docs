@@ -1,0 +1,46 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title mifos-marketplace: C4 Architecture Diagram (Context & Container View)
+
+' ==========================================
+' Level 1: System Context
+' ==========================================
+Person(dev, "Mifos Developer", "Writes code and runs Gradle builds locally.")
+Person(ci, "CI/CD Runner", "Automated system that builds, tests, and publishes code.")
+
+System_Boundary(marketplace_system, "Mifos Marketplace Build System") {
+    System(build_system, "Gradle Build", "Multi-module build applying Mifos conventions.")
+}
+
+System_Ext(plugin_portal, "Gradle Plugin Portal", "Standard public plugin distribution.")
+System_Ext(mifos_artifactory, "Mifos Artifactory", "Hosts Mifos BOM and published JARs.")
+System_Ext(ghcr, "GitHub Container Registry", "Hosts Docker images for Spring Boot apps.")
+
+Rel(dev, build_system, "Builds, tests, and runs via Gradle CLI")
+Rel(ci, build_system, "Builds, tests, and publishes via Gradle CLI")
+Rel(build_system, plugin_portal, "Resolves standard plugins")
+Rel(build_system, mifos_artifactory, "Downloads Mifos BOM, publishes artifacts")
+Rel(build_system, ghcr, "Pushes Docker images (bootBuildImage)")
+
+' ==========================================
+' Level 2: Container View (Build Modules)
+' ==========================================
+System_Boundary(marketplace_repo, "mifos-marketplace Repository") {
+    Container(core_module, ":core", "Java Library Module", "Shared domain models, business logic, and APIs.\nApplies: org.mifos.conventions.base")
+    Container(service_module, ":service", "Spring Boot App Module", "REST API, web layer, and Spring configuration.\nApplies: org.mifos.conventions.boot")
+}
+
+System_Boundary(mifos_plugins, "Mifos Convention Plugins (Dependencies)") {
+    Container(base_plugin, "Base Plugin", "Gradle Plugin", "org.mifos.conventions.base\nEnforces layout, JDK 17, Checkstyle, Spotless, Maven Publish.")
+    Container(boot_plugin, "Boot Plugin", "Gradle Plugin", "org.mifos.conventions.boot\nConfigures Spring Boot BOM, layered JARs, Docker build.")
+}
+
+Rel(service_module, core_module, "Depends on", "implementation(project(':core'))")
+Rel(core_module, base_plugin, "Applied by", "plugins { id(...) }")
+Rel(service_module, boot_plugin, "Applied by", "plugins { id(...) }")
+Rel(boot_plugin, base_plugin, "Extends / implicitly applies")
+
+LAYOUT_WITH_LEGEND()
+
+@enduml

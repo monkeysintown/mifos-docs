@@ -1,0 +1,71 @@
+@startuml
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam componentStyle rectangle
+skinparam packageStyle frame
+skinparam defaultFontName "Helvetica"
+
+title Mifos Gradle Conventions Architecture
+
+package "Mifos Convention Plugins (Published Artifacts)" {
+    component "org.mifos.conventions.boot\n(MifosBootPlugin)" as BootPlugin #LightBlue
+    component "org.mifos.conventions.base\n(MifosBasePlugin)" as BasePlugin #LightGreen
+
+    BootPlugin -|> BasePlugin : extends / applies
+}
+
+package "Base Plugin: Applied Gradle Plugins" as BaseApplied {
+    component "java-library" as JavaLib
+    component "jvm-toolchains" as Toolchains
+    component "checkstyle" as Checkstyle
+    component "com.diffplug.spotless" as Spotless
+    component "maven-publish + signing" as Publish
+}
+
+package "Base Plugin: Enforced Conventions" as BaseConfig {
+    component "Project Layout Validator" as Layout
+    component "Mifos BOM (mifosBom)" as Bom
+    component "JDK 17 Pin" as Jdk17
+    component "Mifos Artifactory Repos" as Repos
+}
+
+package "Boot Plugin: Applied Gradle Plugins" as BootApplied {
+    component "org.springframework.boot" as SpringBoot
+    component "io.spring.dependency-management" as DepMgmt
+    component "java-test-fixtures" as TestFixtures
+}
+
+package "Boot Plugin: Enforced Conventions" as BootConfig {
+    component "Layered JARs" as LayeredJar
+    component "Docker Image Builder\n(ghcr.io/mifos)" as DockerBuild
+    component "Spring Boot BOM (mifosBoot)" as SpringBom
+}
+
+BasePlugin ..> BaseApplied : applies transitively
+BasePlugin ..> BaseConfig : configures
+BootPlugin ..> BootApplied : applies transitively
+BootPlugin ..> BootConfig : configures
+
+package "Consumer Project (e.g., mifos-marketplace)" as Marketplace {
+    component ":core (Library Module)" as CoreModule
+    component ":service (Spring Boot App)" as ServiceModule
+
+    ServiceModule ..> CoreModule : depends on
+}
+
+CoreModule ..> BasePlugin : plugins { id(...) }
+ServiceModule ..> BootPlugin : plugins { id(...) }
+
+note right of BasePlugin
+  **Organizational Conventions**
+  Applies to ALL Mifos projects
+  (Java libraries, CLI tools, etc.)
+end note
+
+note right of BootPlugin
+  **Technology Conventions**
+  Applies ONLY to Spring Boot apps
+  (Inherits all Base conventions)
+end note
+
+@enduml

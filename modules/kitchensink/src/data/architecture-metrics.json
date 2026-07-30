@@ -1,0 +1,54 @@
+{
+  "generatedAt": "2026-09-22T11:04:29.843991524Z",
+  "sourceSet": "main",
+  "components": [
+    {
+      "component": "org.mifos.commons.boot.cli.pico",
+      "classCount": 1,
+      "abstractTypeCount": 0,
+      "afferentCoupling": 0,
+      "efferentCoupling": 0,
+      "abstractness": 0.000000,
+      "instability": 0.000000,
+      "distance": 1.000000,
+      "incomingComponents": [],
+      "outgoingComponents": []
+    },
+    {
+      "component": "org.mifos.commons.boot.cli.pico.autoconfigure",
+      "classCount": 2,
+      "abstractTypeCount": 0,
+      "afferentCoupling": 0,
+      "efferentCoupling": 1,
+      "abstractness": 0.000000,
+      "instability": 1.000000,
+      "distance": 0.000000,
+      "incomingComponents": [],
+      "outgoingComponents": ["org.mifos.commons.boot.cli.pico.command"]
+    },
+    {
+      "component": "org.mifos.commons.boot.cli.pico.command",
+      "classCount": 1,
+      "abstractTypeCount": 1,
+      "afferentCoupling": 1,
+      "efferentCoupling": 0,
+      "abstractness": 1.000000,
+      "instability": 0.000000,
+      "distance": 0.000000,
+      "incomingComponents": ["org.mifos.commons.boot.cli.pico.autoconfigure"],
+      "outgoingComponents": []
+    },
+    {
+      "component": "org.mifos.commons.boot.cli.pico.runner",
+      "classCount": 1,
+      "abstractTypeCount": 0,
+      "afferentCoupling": 0,
+      "efferentCoupling": 0,
+      "abstractness": 0.000000,
+      "instability": 0.000000,
+      "distance": 1.000000,
+      "incomingComponents": [],
+      "outgoingComponents": []
+    }
+  ]
+}
