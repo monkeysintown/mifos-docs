@@ -1,0 +1,46 @@
+= Sample Chapter
+
+This is a paragraph. AsciiDoc supports **bold**, _italic_, and `inline code`.
+
+* Unordered list item 1
+* Unordered list item 2
+
+CAUTION: Some important caution
+
+NOTE: Some important note
+
+TIP: Some important tip
+
+WARNING: Some important warning
+
+IMPORTANT: Some important stuff
+
+[,java,subs=attributes+]
+----
+interface Repository extends CrudRepository<Model,Long> {
+
+  Model findById(long id);
+
+}
+----
+
+[plantuml,test,svg]
+----
+include::{diagramsdir}/test-theme.puml[]
+----
+
+.Vega Example 1
+[vega,rendered-vega-image1,svg]
+----
+include::{diagramsdir}/diagram-vega-example1.vg.json[]
+----
+
+.Vega Example 2
+[vega,rendered-vega-image2,svg]
+----
+include::{diagramsdir}/diagram-vega-example2.vg.json[]
+----
+
+See:
+
+* https://vega.github.io/vega/examples/
