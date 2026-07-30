@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Graphviz
+        run: |
+          sudo apt-get -y install graphviz
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false # Disable automatic npm caching if not required
+
+      - name: Setup Global NPM Path
+        run: |
+          mkdir ~/.npm-global
+          npm config set prefix '~/.npm-global'
+          echo "PATH=$HOME/.npm-global/bin:$PATH" >> $GITHUB_PATH
+
+      - name: Cache Global NPM Packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm-global
+          key: ${{ runner.os }}-npm-global-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-global-
+
+      - name: Setup Vega Lite
+        run: npm install -g vega-lite && ls -la ~/.npm-global/bin
+
+      - name: Setup Vega CLI
+        run: npm install -g vega-cli && ls -la ~/.npm-global/bin
+
+      - name: Set up JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: "25"
+          distribution: "zulu"
+          cache: gradle
+
+      - name: Setup Global Gradle Properties
+        run: |
+          mkdir -p ~/.gradle/
+          echo "GRADLE_USER_HOME=${HOME}/.gradle" >> $GITHUB_ENV
+          echo "mifos.asciidoc.diagram.vg.dir=~/.npm-global/bin" > ~/.gradle/gradle.properties
+          cat ~/.gradle/gradle.properties
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Resolve Mifos Build Configuration
+        run: ./gradlew mifosConfigUnzip --no-daemon
+
+      - name: Build with Gradle
+        run: ./gradlew asciidocZip -Dmifos.asciidoc.diagram.vg.dir=~/.npm-global/bin -Pmifos.asciidoc.diagram.vg.dir=~/.npm-global/bin --no-daemon
+
+      - name: "Upload documentation artifacts"
+        uses: actions/upload-artifact@v7
+        with:
+          name: mifos-docs-kitchensink
+          path: modules/kitchensink/build/docs
+          retention-days: 5
+
+      #- name: Run JReleaser
+      #  uses: jreleaser/jreleaser-action@v2
+      #  env:
+      #    # JRELEASER_PROJECT_VERSION: ${{ github.ref_name }}
+      #    JRELEASER_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #    JRELEASER_ARTIFACTORY_TOKEN: ${{ secrets.JRELEASER_ARTIFACTORY_TOKEN }}
+      #    JRELEASER_ARTIFACTORY_USERNAME: ${{ secrets.JRELEASER_ARTIFACTORY_USERNAME }}
+      #    JRELEASER_GPG_PUBLIC_KEY: ${{ secrets.JRELEASER_GPG_PUBLIC_KEY }}
+      #    JRELEASER_GPG_SECRET_KEY: ${{ secrets.JRELEASER_GPG_SECRET_KEY }}
+      #    JRELEASER_GPG_PASSPHRASE: ${{ secrets.JRELEASER_GPG_PASSPHRASE }}
